@@ -1,7 +1,6 @@
-package com.munchy.gateway.security;
+package com.munchy.account.security;
 
-import com.munchy.gateway.users.LocalUser;
-import org.springframework.beans.factory.annotation.Qualifier;
+import com.munchy.account.dto.user.AccountUserResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
@@ -18,36 +17,42 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Service
-public class JwtService {
+public class JwtTokenService {
     public static final String ISSUER = "munchy";
     public static final String ACCESS_TYPE = "access";
     public static final String REFRESH_TYPE = "refresh";
 
     private final JwtEncoder encoder;
-    private final ReactiveJwtDecoder baseDecoder;
+    private final ReactiveJwtDecoder decoder;
     private final Duration accessLifetime;
     private final Duration refreshLifetime;
 
-    public JwtService(
+    public JwtTokenService(
             JwtEncoder encoder,
-            @Qualifier("baseJwtDecoder") ReactiveJwtDecoder baseDecoder,
+            ReactiveJwtDecoder decoder,
             @Value("${munchy.jwt.access-token-duration}") Duration accessLifetime,
             @Value("${munchy.jwt.refresh-token-duration}") Duration refreshLifetime) {
         this.encoder = encoder;
-        this.baseDecoder = baseDecoder;
+        this.decoder = decoder;
         this.accessLifetime = accessLifetime;
         this.refreshLifetime = refreshLifetime;
     }
 
-    public TokenPair createTokenPair(LocalUser user) {
-        return new TokenPair(
-                createToken(user, ACCESS_TYPE, accessLifetime),
-                createToken(user, REFRESH_TYPE, refreshLifetime)
+    public IssuedTokenPair issue(AccountUserResponse user, UUID sessionId) {
+        Instant now = Instant.now();
+        UUID accessId = UUID.randomUUID();
+        UUID refreshId = UUID.randomUUID();
+        Instant refreshExpiresAt = now.plus(refreshLifetime);
+        return new IssuedTokenPair(
+                encode(user, sessionId, ACCESS_TYPE, accessId, now, now.plus(accessLifetime)),
+                encode(user, sessionId, REFRESH_TYPE, refreshId, now, refreshExpiresAt),
+                refreshId,
+                refreshExpiresAt
         );
     }
 
-    public Mono<Jwt> validateRefreshToken(String token) {
-        return baseDecoder.decode(token)
+    public Mono<Jwt> validateRefresh(String rawToken) {
+        return decoder.decode(rawToken)
                 .filter(jwt -> REFRESH_TYPE.equals(jwt.getClaimAsString("token_type")))
                 .switchIfEmpty(Mono.error(new IllegalArgumentException("Invalid refresh token type")));
     }
@@ -60,20 +65,25 @@ public class JwtService {
         return refreshLifetime;
     }
 
-    private String createToken(LocalUser user, String type, Duration lifetime) {
-        Instant now = Instant.now();
+    private String encode(
+            AccountUserResponse user,
+            UUID sessionId,
+            String tokenType,
+            UUID jwtId,
+            Instant issuedAt,
+            Instant expiresAt) {
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .issuer(ISSUER)
-                .subject(user.id())
-                .id(UUID.randomUUID().toString())
-                .issuedAt(now)
-                .expiresAt(now.plus(lifetime))
-                .claim("email", user.email())
-                .claim("roles", user.roles())
-                .claim("token_type", type)
+                .subject(user.getId().toString())
+                .id(jwtId.toString())
+                .issuedAt(issuedAt)
+                .expiresAt(expiresAt)
+                .claim("sid", sessionId.toString())
+                .claim("email", user.getEmail())
+                .claim("roles", user.getRoles())
+                .claim("token_type", tokenType)
                 .build();
-
-        JwsHeader header = JwsHeader.with(MacAlgorithm.HS256).build();
-        return encoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
+        return encoder.encode(JwtEncoderParameters.from(
+                JwsHeader.with(MacAlgorithm.HS256).build(), claims)).getTokenValue();
     }
 }

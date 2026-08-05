@@ -13,6 +13,12 @@ public class AuthenticatedUserHeadersFilter implements GlobalFilter, Ordered {
     private static final String USER_ID = "X-User-Id";
     private static final String USER_EMAIL = "X-User-Email";
     private static final String USER_ROLES = "X-User-Roles";
+    private static final String AUTH_SESSION_ID = "X-Auth-Session-Id";
+    private final InternalServiceKey internalServiceKey;
+
+    public AuthenticatedUserHeadersFilter(InternalServiceKey internalServiceKey) {
+        this.internalServiceKey = internalServiceKey;
+    }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
@@ -21,6 +27,9 @@ public class AuthenticatedUserHeadersFilter implements GlobalFilter, Ordered {
                     headers.remove(USER_ID);
                     headers.remove(USER_EMAIL);
                     headers.remove(USER_ROLES);
+                    headers.remove(AUTH_SESSION_ID);
+                    headers.remove(InternalServiceKey.HEADER);
+                    headers.set(InternalServiceKey.HEADER, internalServiceKey.value());
                 });
 
         return exchange.getPrincipal()
@@ -29,6 +38,10 @@ public class AuthenticatedUserHeadersFilter implements GlobalFilter, Ordered {
                     headers.set(USER_ID, authentication.getToken().getSubject());
                     headers.set(USER_EMAIL, authentication.getToken().getClaimAsString("email"));
                     headers.set(USER_ROLES, String.join(",", authentication.getToken().getClaimAsStringList("roles")));
+                    String sessionId = authentication.getToken().getClaimAsString("sid");
+                    if (sessionId != null && !sessionId.isBlank()) {
+                        headers.set(AUTH_SESSION_ID, sessionId);
+                    }
                 }).build())
                 .defaultIfEmpty(sanitized.build())
                 .flatMap(request -> chain.filter(exchange.mutate().request(request).build()));

@@ -3,6 +3,16 @@
 
 # Log file
 *.log
+*.pid
+*.tmp
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+application-local.properties
+application-local.yml
+application-local.yaml
 
 # BlueJ files
 *.ctxt
@@ -27,5 +37,29 @@ replay_pid*
 .idea/
 *.iml
 
+# VS Code and Eclipse/STS
+.vscode/
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache/
+
 # Java
 target/
+
+# Node/Angular
+node_modules/
+dist/
+coverage/
+.angular/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local database exports
+*.backup
+*.dump

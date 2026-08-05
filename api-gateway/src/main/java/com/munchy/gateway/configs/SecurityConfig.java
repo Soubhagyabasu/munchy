@@ -1,12 +1,10 @@
 package com.munchy.gateway.configs;
 
-import com.munchy.gateway.security.JwtService;
+import com.munchy.gateway.security.JwtClaims;
 import com.munchy.gateway.security.OAuthLoginSuccessHandler;
 import com.munchy.gateway.security.TokenCookieService;
-import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,9 +16,7 @@ import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtClaimValidator;
-import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
-import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
@@ -98,28 +94,13 @@ public class SecurityConfig {
     }
 
     @Bean
-    JwtEncoder jwtEncoder(@Value("${munchy.jwt.secret}") String secret) {
-        return new NimbusJwtEncoder(new ImmutableSecret<>(jwtSecret(secret)));
-    }
-
-    @Bean("baseJwtDecoder")
-    ReactiveJwtDecoder baseJwtDecoder(@Value("${munchy.jwt.secret}") String secret) {
-        NimbusReactiveJwtDecoder decoder = NimbusReactiveJwtDecoder.withSecretKey(jwtSecret(secret))
-                .macAlgorithm(MacAlgorithm.HS256)
-                .build();
-        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(JwtService.ISSUER));
-        return decoder;
-    }
-
-    @Bean
-    ReactiveJwtDecoder accessJwtDecoder(@Qualifier("baseJwtDecoder") ReactiveJwtDecoder ignored,
-                                        @Value("${munchy.jwt.secret}") String secret) {
+    ReactiveJwtDecoder accessJwtDecoder(@Value("${munchy.jwt.secret}") String secret) {
         NimbusReactiveJwtDecoder decoder = NimbusReactiveJwtDecoder.withSecretKey(jwtSecret(secret))
                 .macAlgorithm(MacAlgorithm.HS256)
                 .build();
         OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
-                JwtValidators.createDefaultWithIssuer(JwtService.ISSUER),
-                new JwtClaimValidator<>("token_type", JwtService.ACCESS_TYPE::equals)
+                JwtValidators.createDefaultWithIssuer(JwtClaims.ISSUER),
+                new JwtClaimValidator<>("token_type", JwtClaims.ACCESS_TYPE::equals)
         );
         decoder.setJwtValidator(validator);
         return decoder;
@@ -133,7 +114,7 @@ public class SecurityConfig {
                 "http://localhost:4200",
                 "http://127.0.0.1:4200"
         ).stream().distinct().toList());
-        configuration.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
         configuration.setAllowCredentials(true);
 

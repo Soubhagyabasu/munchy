@@ -1,9 +1,7 @@
 package com.munchy.gateway.controllers;
 
-import com.munchy.gateway.security.JwtService;
+import com.munchy.gateway.accounts.AccountServiceClient;
 import com.munchy.gateway.security.TokenCookieService;
-import com.munchy.gateway.users.LocalUser;
-import com.munchy.gateway.users.UserAccountService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -20,26 +18,23 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/auth")
 public class AuthController {
-    private final JwtService jwtService;
     private final TokenCookieService cookies;
-    private final UserAccountService users;
+    private final AccountServiceClient accounts;
 
-    public AuthController(JwtService jwtService, TokenCookieService cookies, UserAccountService users) {
-        this.jwtService = jwtService;
+    public AuthController(TokenCookieService cookies, AccountServiceClient accounts) {
         this.cookies = cookies;
-        this.users = users;
+        this.accounts = accounts;
     }
 
     @GetMapping("/me")
-    public Map<String, Object> currentUser(@AuthenticationPrincipal Jwt jwt) {
-        LocalUser user = users.requireById(jwt.getSubject());
-        return Map.of(
+    public Mono<Map<String, Object>> currentUser(@AuthenticationPrincipal Jwt jwt) {
+        return accounts.findUser(jwt.getSubject()).map(user -> Map.of(
                 "username", user.id(),
                 "fullName", user.name(),
                 "email", user.email(),
-                "picture", user.picture() == null ? "" : user.picture(),
+                "picture", user.pictureUrl() == null ? "" : user.pictureUrl(),
                 "roles", user.roles()
-        );
+        ));
     }
 
     @PostMapping("/refresh")
@@ -49,18 +44,23 @@ public class AuthController {
             return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).build());
         }
 
-        return jwtService.validateRefreshToken(cookie.getValue())
-                .map(jwt -> users.requireById(jwt.getSubject()))
-                .map(user -> {
-                    cookies.setTokens(exchange, jwtService.createTokenPair(user), jwtService);
+        return accounts.refresh(cookie.getValue())
+                .map(tokens -> {
+                    cookies.setTokens(exchange, tokens);
                     return ResponseEntity.ok(Map.of("status", "refreshed"));
                 })
                 .onErrorReturn(ResponseEntity.status(HttpStatus.UNAUTHORIZED).build());
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(ServerWebExchange exchange) {
-        cookies.clearTokens(exchange);
-        return ResponseEntity.noContent().build();
+    public Mono<ResponseEntity<Void>> logout(ServerWebExchange exchange) {
+        var cookie = exchange.getRequest().getCookies().getFirst(TokenCookieService.REFRESH_COOKIE);
+        Mono<Void> revocation = cookie == null || cookie.getValue().isBlank()
+                ? Mono.empty()
+                : accounts.logout(cookie.getValue()).onErrorResume(error -> Mono.empty());
+        return revocation.then(Mono.fromSupplier(() -> {
+            cookies.clearTokens(exchange);
+            return ResponseEntity.noContent().build();
+        }));
     }
 }

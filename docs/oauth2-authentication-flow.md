@@ -7,6 +7,7 @@ sequenceDiagram
     actor Browser
     participant Angular
     participant Gateway as API Gateway
+    participant Accounts as Account Service
     participant Google
     participant Orders as Order Service
 
@@ -17,8 +18,10 @@ sequenceDiagram
     Google->>Gateway: GET /login/oauth2/code/google?code=...
     Gateway->>Google: Authorization-code exchange
     Google-->>Gateway: Google tokens (backend only)
-    Gateway->>Gateway: Verify identity and find/create local user
-    Gateway->>Gateway: Issue Munchy access + refresh JWTs
+    Gateway->>Accounts: Verified Google identity (server-to-server)
+    Accounts->>Accounts: Find/create persistent user and login session
+    Accounts->>Accounts: Issue JWTs and hash/store refresh token
+    Accounts-->>Gateway: Munchy access + refresh JWTs
     Gateway-->>Browser: HttpOnly cookies + redirect /auth/callback
     Angular->>Gateway: GET /api/v1/orders + access cookie
     Gateway->>Gateway: Validate Munchy access JWT
@@ -29,11 +32,12 @@ sequenceDiagram
 ## Responsibilities
 
 - **Angular** starts login, follows redirects, and calls APIs with `withCredentials`. It never reads tokens.
-- **API Gateway** delegates Google OAuth protocol work to Spring Security, maps Google identities to local users, issues Munchy tokens, validates access tokens, and protects routes.
+- **API Gateway** delegates Google OAuth protocol work to Spring Security, calls the Account Service after Google succeeds, sets HttpOnly cookies, validates access tokens, and protects routes.
+- **Account Service** owns persistent users, Google identities, roles, login sessions, refresh-token rotation, saved addresses, consented session location, and Munchy token issuance.
 - **Google** authenticates the user and issues Google tokens only to the gateway.
 - **Order Service** owns order business logic. It should be privately reachable only through the gateway in production.
 
-Before forwarding, the gateway removes client-supplied `X-User-Id`, `X-User-Email`, and `X-User-Roles` headers and recreates them from the validated JWT. The order service must trust these headers only when network policy ensures requests came from the gateway.
+Before forwarding, the gateway removes client-supplied identity headers and recreates `X-User-Id`, `X-User-Email`, `X-User-Roles`, and `X-Auth-Session-Id` from the validated JWT. It also adds an internal service key derived from `MUNCHY_JWT_SECRET`; the Account Service rejects requests without it. Production still requires private service networking and TLS.
 
 ## Google tokens and Munchy tokens
 
@@ -46,20 +50,20 @@ The access JWT lasts 15 minutes by default and contains the internal Munchy user
 | Cookie | Path | Default lifetime | Purpose |
 |---|---|---:|---|
 | `munchy_access_token` | `/` | 15 minutes | Authenticate APIs |
-| `munchy_refresh_token` | `/api/v1/auth/refresh` | 7 days | Rotate tokens |
+| `munchy_refresh_token` | `/api/v1/auth` | 7 days | Rotate tokens and revoke the session on logout |
 | `munchy_oauth_session` | `/` | OAuth handshake only | Preserve state and authorization request |
 
 Token cookies are `HttpOnly`, `SameSite=Lax`, and use configurable `Secure`. `HttpOnly` prevents JavaScript token access but does not by itself prevent CSRF. CSRF is disabled for this milestone because SameSite=Lax prevents the cookies on ordinary cross-site POST requests. Before supporting untrusted same-site subdomains, add explicit CSRF tokens and stricter origin controls.
 
 ## Refresh and logout
 
-`POST /api/v1/auth/refresh` reads only the refresh cookie, validates signature, issuer, expiry and token type, resolves the local user, then rotates both JWTs.
+`POST /api/v1/auth/refresh` reads only the refresh cookie. The Account Service validates the JWT and stored SHA-256 hash, locks the refresh row, marks it used, creates a replacement row, and rotates both JWTs. Reuse of an already-used refresh token revokes the stable login session.
 
-`POST /api/v1/auth/logout` expires both cookies. Because the design is stateless, clearing a cookie does not revoke a copied access JWT. Immediate revocation and refresh-token reuse detection require a server-side token-family store, denylist, or token version.
+`POST /api/v1/auth/logout` revokes the database session and active refresh token before expiring both cookies. A copied access JWT remains valid only until its short expiry; immediate access-token revocation would require a denylist or token-version check.
 
-## Local users
+## Persistent accounts
 
-The gateway currently uses a demonstration in-memory repository keyed by Google `sub` and assigns `ROLE_CUSTOMER`. Restarting the gateway clears users, so existing refresh tokens no longer resolve after restart. Replace this adapter with a user service or persistent repository before production.
+The Account Service uses PostgreSQL tables under the `account` schema. Google identities are keyed by `(provider, provider_subject)`, Munchy users have internal UUIDs, new accounts receive `CUSTOMER`, and refresh tokens are stored only as SHA-256 hashes. Restarting services no longer removes users or sessions.
 
 ## Configuration
 
@@ -69,6 +73,7 @@ Required environment variables:
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 MUNCHY_JWT_SECRET          # at least 32 random bytes
+MUNCHY_ACCOUNT_DB_PASSWORD # password for local role munchy_account_app
 ```
 
 Optional variables:
@@ -80,6 +85,11 @@ MUNCHY_JWT_ACCESS_DURATION=15m
 MUNCHY_JWT_REFRESH_DURATION=7d
 MUNCHY_COOKIE_SECURE=false
 MUNCHY_COOKIE_DOMAIN=
+MUNCHY_ACCOUNT_SERVICE_URL=http://localhost:8082
+MUNCHY_ACCOUNT_DB_HOST=localhost
+MUNCHY_ACCOUNT_DB_PORT=5432
+MUNCHY_ACCOUNT_DB_NAME=munchy_account
+MUNCHY_ACCOUNT_DB_USERNAME=munchy_account_app
 ```
 
 Google must allow this local callback:
@@ -91,6 +101,14 @@ http://localhost:8080/login/oauth2/code/google
 Use `MUNCHY_COOKIE_SECURE=true` with HTTPS in production. Never commit any listed secret.
 
 ## Run locally
+
+```powershell
+cd D:\Projects\munchy\account-service
+$env:JAVA_HOME='C:\Users\hp\.jdks\openjdk-22.0.2'
+$env:MUNCHY_ACCOUNT_DB_PASSWORD=[Environment]::GetEnvironmentVariable('MUNCHY_ACCOUNT_DB_PASSWORD','User')
+$env:MUNCHY_JWT_SECRET=[Environment]::GetEnvironmentVariable('MUNCHY_JWT_SECRET','User')
+.\mvnw.cmd spring-boot:run
+```
 
 ```powershell
 cd D:\Projects\munchy\order-service
@@ -122,7 +140,7 @@ npm.cmd start
 
 ## Remaining limitations
 
-- In-memory users and no persistent refresh-token family/reuse tracking.
 - Stateless access JWTs cannot be revoked immediately.
 - CSRF relies on SameSite and strict CORS for this milestone.
-- Downstream service network isolation and trusted identity-header propagation are not implemented yet.
+- The Account Service is bound to loopback locally; production also needs private networking and TLS.
+- Browser code for requesting and submitting consented GPS location is not implemented yet.
